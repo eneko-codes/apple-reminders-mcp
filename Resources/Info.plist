@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- CFBundleName is the label macOS shows in System Settings > Privacy & Security >
+	     Reminders. Keep it identical to the binary name so the toggle is recognisable. -->
+	<key>CFBundleName</key>
+	<string>apple-reminders-mcp</string>
+	<key>CFBundleIdentifier</key>
+	<string>codes.eneko.apple-reminders-mcp</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<!-- Reminders were never split into full and write-only the way calendars were in
+	     macOS 14: requestFullAccessToReminders is the only request, and this is the only
+	     usage description key that matches it. Key name verified against the tccd binary
+	     on macOS 26.5. -->
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Lets Claude read and manage your reminders through this local MCP server.</string>
+</dict>
+</plist>

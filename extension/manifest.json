@@ -1,0 +1,88 @@
+{
+  "manifest_version": "0.3",
+  "name": "apple-reminders-mcp",
+  "display_name": "Apple Reminders",
+  "version": "1.0.0",
+  "description": "Read and manage macOS Reminders through EventKit, without ever rewriting what is already done",
+  "long_description": "A local MCP server written in Swift that gives Claude access to the Reminders app on this Mac.\n\nThere is no network, no account and no API key. iCloud is only the sync engine that fills the local reminder store. The gate is macOS privacy consent, and the grant appears under System Settings → Privacy & Security → Reminders.\n\nA completed reminder is never modified or deleted. Ticking something off is the record that it was done, and this server refuses to rewrite that record even when asked — with one deliberate exception: it can always reopen a reminder, which is how a mistaken tick is undone. Once reopened it is an ordinary reminder again and can be edited or removed.\n\nSearches look at open reminders unless asked otherwise, so \"what do I need to do\" does not come back full of things already finished.\n\nA reminder given a due time also gets an alarm, because EventKit creates none by itself and a reminder that never notifies is not much of a reminder.\n\nLists can be created, renamed, recoloured and deleted — but a list that still holds reminders is never deleted, because removing a list takes its whole contents with it. Empty it first, or use Reminders.app.\n\nSections inside a list cannot be touched at all: they exist only inside Reminders.app and appear nowhere in EventKit, so no app other than Apple's own can read or create one.\n\nEventKit cannot create repeating reminders; that must be done in Reminders.app.\n\nPlug and play: there is nothing to configure. Every list is reachable, and the only control over what this server may do is each tool's own allow/ask/prohibit switch below.\n\nNot affiliated with or endorsed by Apple Inc.",
+  "author": {
+    "name": "eneko-codes",
+    "url": "https://github.com/eneko-codes"
+  },
+  "homepage": "https://github.com/eneko-codes/apple-reminders-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eneko-codes/apple-reminders-mcp"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": [
+    "reminders",
+    "tasks",
+    "todo",
+    "eventkit",
+    "macos",
+    "apple"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/apple-reminders-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/apple-reminders-mcp",
+      "args": [],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "reminders_status",
+      "description": "Report whether Reminders access is granted, and how to grant it. Reads no reminders."
+    },
+    {
+      "name": "reminder_lists",
+      "description": "List the reminder lists, their accounts, and which accept writes"
+    },
+    {
+      "name": "reminders_search",
+      "description": "Find reminders by text, list, completion state and due date"
+    },
+    {
+      "name": "reminder_get",
+      "description": "Read one reminder in full, including whether it can still be edited"
+    },
+    {
+      "name": "create_reminder",
+      "description": "Add a reminder. Cannot create a repeating one."
+    },
+    {
+      "name": "update_reminder",
+      "description": "Change a reminder. Refuses reminders already completed."
+    },
+    {
+      "name": "complete_reminder",
+      "description": "Tick a reminder off, or reopen one that was ticked off by mistake"
+    },
+    {
+      "name": "delete_reminder",
+      "description": "Permanently delete a reminder. Requires explicit confirmation; refuses completed ones."
+    },
+    {
+      "name": "create_list",
+      "description": "Create an empty reminder list. Cannot create a section inside a list."
+    },
+    {
+      "name": "update_list",
+      "description": "Rename a reminder list or change its colour"
+    },
+    {
+      "name": "delete_list",
+      "description": "Permanently delete a list. Requires explicit confirmation; refuses any list that still holds reminders."
+    }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin"
+    ]
+  }
+}
