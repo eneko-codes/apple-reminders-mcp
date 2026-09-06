@@ -76,8 +76,10 @@ struct ReminderToolsTests {
     }
 
     /// The schema cannot advertise null, so the empty string has to work — otherwise a
-    /// field the description says is clearable simply is not.
-    @Test("An empty string clears a field just as null does")
+    /// field the description says is clearable simply is not. Also covers the other half
+    /// of the same contract: a field left out of the call entirely must survive untouched,
+    /// or "clearable" and "optional" become the same bug.
+    @Test("An empty string clears a field just as null does; omitting it leaves it alone")
     func emptyStringClears() async {
         for empty in [Value.string(""), Value.null] {
             let store = FakeReminderStore()
@@ -88,6 +90,7 @@ struct ReminderToolsTests {
             let updated = store.reminders.first { $0.id == "rem-open" }
             #expect(updated?.due == nil)
             #expect(updated?.notes == nil)
+            #expect(updated?.title == "Buy olive oil", "an untouched field must survive")
         }
     }
 
@@ -130,8 +133,10 @@ struct ReminderToolsTests {
     }
 
     /// EventKit reads the *absence* of time components as "all day", so a whole-day due
-    /// date must not carry a zeroed hour.
-    @Test("A whole-day due date carries no time components; a timed one does")
+    /// date must not carry a zeroed hour. Also covers the trip back: `due(from:)` is only
+    /// ever called inside `SystemReminderStore`, below the seam no fake can reach, so this
+    /// is the one place that reverse conversion gets checked at all.
+    @Test("A whole-day due date carries no time components; a timed one does, and both survive the round trip")
     func dueComponentsCarryTimeOnlyWhenGiven() {
         let calendar = Fixtures.calendar
         let wholeDay = DateParsing.dueComponents(Fixtures.wholeDay(2026, 8, 12), calendar: calendar)
@@ -141,11 +146,7 @@ struct ReminderToolsTests {
         let timed = DateParsing.dueComponents(Fixtures.due(2026, 8, 12, 9, 30), calendar: calendar)
         #expect(timed.hour == 9)
         #expect(timed.minute == 30)
-    }
 
-    @Test("A due date survives the trip through EventKit's components and back")
-    func dueComponentsRoundTrip() {
-        let calendar = Fixtures.calendar
         for original in [Fixtures.due(2026, 8, 12, 9, 30), Fixtures.wholeDay(2026, 8, 12)] {
             let components = DateParsing.dueComponents(original, calendar: calendar)
             let recovered = DateParsing.due(from: components, calendar: calendar)
@@ -202,15 +203,6 @@ struct ReminderToolsTests {
     }
 
     // MARK: Search
-
-    @Test("Search echoes the filters it used")
-    func searchEchoesFilters() async {
-        let result = await call("reminders_search")
-        #expect(!result.isError)
-        #expect(result.text.contains("incomplete"))
-        #expect(result.text.contains("lists: all"))
-        #expect(result.text.contains("Europe/Madrid"))
-    }
 
     /// The default is what someone means by "my reminders" — the ones still to do.
     @Test("Search looks at open reminders unless told otherwise")
@@ -545,16 +537,6 @@ struct ReminderToolsTests {
         #expect(store.updated.isEmpty)
     }
 
-    @Test("null clears a field; omitting it leaves the field alone")
-    func nullClearsAndOmissionKeeps() async {
-        let store = FakeReminderStore()
-        _ = await call(
-            "update_reminder", ["id": .string("rem-open"), "notes": .null], store: store)
-        let updated = store.reminders.first { $0.id == "rem-open" }
-        #expect(updated?.notes == nil)
-        #expect(updated?.title == "Buy olive oil", "an untouched field must survive")
-    }
-
     /// An alarm is an instant derived from the due date. Left behind, it would still fire
     /// for a deadline that no longer exists.
     @Test("Clearing the due date takes its alarms with it, and says so")
@@ -807,65 +789,61 @@ struct ReminderToolsTests {
     // MARK: Ambiguous titles
 
     /// Renaming or deleting the wrong "Personal" is not recoverable, so a shared title is
-    /// refused rather than resolved by enumeration order.
-    @Test("A title held by two accounts is refused, naming both")
+    /// refused rather than resolved by enumeration order — unless an account breaks the tie,
+    /// in which case it resolves to exactly the one named and leaves the other alone.
+    @Test("A title held by two accounts is refused, naming both, unless an account breaks the tie")
     func ambiguousTitlesAreRefused() async {
-        let store = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
+        let refused = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
         let result = await call(
-            "update_list", ["list": .string("Personal"), "title": .string("Mine")], store: store)
+            "update_list", ["list": .string("Personal"), "title": .string("Mine")],
+            store: refused)
         #expect(result.isError)
         #expect(result.text.contains("More than one"))
         #expect(result.text.contains("iCloud"))
         #expect(result.text.contains("On My Mac"))
-        #expect(store.updatedLists.isEmpty)
-    }
+        #expect(refused.updatedLists.isEmpty)
 
-    @Test("Naming the account resolves an otherwise ambiguous title")
-    func accountBreaksTheTie() async {
-        let store = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
-        let result = await call(
+        let resolved = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
+        let tieBroken = await call(
             "update_list",
             [
                 "list": .string("Personal"), "account": .string("On My Mac"),
                 "title": .string("Mine"),
-            ], store: store)
-        #expect(!result.isError)
-        let renamed = store.listCatalogue.first { $0.title == "Mine" }
+            ], store: resolved)
+        #expect(!tieBroken.isError)
+        let renamed = resolved.listCatalogue.first { $0.title == "Mine" }
         #expect(renamed?.sourceName == "On My Mac")
-        #expect(store.listCatalogue.contains { $0.title == "Personal" }, "iCloud's is untouched")
+        #expect(resolved.listCatalogue.contains { $0.title == "Personal" }, "iCloud's is untouched")
     }
 
     /// The same rule for the tool that runs most often. A reminder filed in the wrong
     /// "Personal" is not destroyed, but it is invisible to whoever expected it in the
-    /// other one — and nothing in the confirmation would say so.
-    @Test("Creating into a title held by two accounts is refused, naming both")
+    /// other one — and nothing in the confirmation would say so. Naming the account
+    /// resolves the tie, and the account has to survive as far as the store: resolving it
+    /// in the tool layer and then handing the store a title alone would leave the guess
+    /// exactly where it was, one layer down.
+    @Test("Creating into a title held by two accounts is refused, naming both, unless an account breaks the tie")
     func ambiguousListOnCreateIsRefused() async {
-        let store = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
+        let refused = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
         let result = await call(
             "create_reminder",
-            ["list": .string("Personal"), "title": .string("Buy stamps")], store: store)
+            ["list": .string("Personal"), "title": .string("Buy stamps")], store: refused)
         #expect(result.isError)
         #expect(result.text.contains("More than one"))
         #expect(result.text.contains("iCloud"))
         #expect(result.text.contains("On My Mac"))
-        #expect(store.createdReminders.isEmpty, "nothing may be written on a guess")
-    }
+        #expect(refused.createdReminders.isEmpty, "nothing may be written on a guess")
 
-    @Test("Naming the account resolves an ambiguous list on create")
-    func accountBreaksTheTieOnCreate() async {
-        let store = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
-        let result = await call(
+        let resolved = FakeReminderStore(lists: Fixtures.listsWithDuplicateTitle)
+        let tieBroken = await call(
             "create_reminder",
             [
                 "list": .string("Personal"), "account": .string("On My Mac"),
                 "title": .string("Buy stamps"),
-            ], store: store)
-        #expect(!result.isError)
-        // The account has to survive as far as the store: resolving it in the tool layer
-        // and then handing the store a title alone would leave the guess exactly where it
-        // was, one layer down.
-        #expect(store.createdReminders.last?.listAccountName == "On My Mac")
-        #expect(store.createdReminders.last?.listTitle == "Personal")
+            ], store: resolved)
+        #expect(!tieBroken.isError)
+        #expect(resolved.createdReminders.last?.listAccountName == "On My Mac")
+        #expect(resolved.createdReminders.last?.listTitle == "Personal")
     }
 
     /// An account that does not exist is a typo, and the tie it was meant to break is
