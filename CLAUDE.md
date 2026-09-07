@@ -16,6 +16,19 @@ Do not modify, complete or delete an existing reminder or list.
 
 A local MCP server (Swift 6, stdio transport) exposing the macOS Reminders app through `EventKit`. No network, no credential, no cloud API — iCloud is only the sync engine, gated by TCC consent.
 
+## Apple frameworks
+
+[EventKit](https://developer.apple.com/documentation/eventkit) is the whole of it. Used: `EKEventStore` (authorisation, fetch, save, remove), `EKReminder`, `EKCalendar` (a list), `EKSource`, `EKAlarm`, `EKRecurrenceRule`/`EKRecurrenceEnd` (read only). List colours go through [Core Graphics](https://developer.apple.com/documentation/coregraphics) `CGColor`. Consent key: [`NSRemindersFullAccessUsageDescription`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsremindersfullaccessusagedescription).
+
+## Native surface not used
+
+The framework offers more than this server exposes. Before proposing a tool, check it against this list rather than assuming.
+
+- `EKEvent` and `EKParticipant` — calendar events are a separate entity behind a separate permission.
+- `EKStructuredLocation` — hence no location-based alarm.
+- Constructing an `EKRecurrenceRule` — recurrence is read and summarised, never written.
+- Sections inside a list — these exist in Reminders.app only. EventKit has no section on `EKCalendar` or `EKReminder`, so no tool here can see, create or rename one.
+
 ## Commands
 
 ```bash

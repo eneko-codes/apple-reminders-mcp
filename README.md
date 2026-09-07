@@ -11,8 +11,8 @@ No network, no credentials, no cloud API. iCloud is only the sync engine that fi
 local reminder store; this server reads and writes that local store, and the gate is
 macOS **privacy consent** rather than authentication.
 
-Calendar events are a separate EventKit entity with a separate permission and live in
-[`apple-calendar-mcp`](https://github.com/eneko-codes/apple-calendar-mcp).
+Calendar events are a separate EventKit entity with a separate permission, and are not
+exposed here.
 
 Not affiliated with or endorsed by Apple Inc.
 
@@ -38,6 +38,18 @@ Not affiliated with or endorsed by Apple Inc.
 | `create_list` | write | Adds an empty list, in the default list's account unless told otherwise. |
 | `update_list` | write | Renames a list or changes its colour. |
 | `delete_list` | **destructive** | Permanent. Requires `confirm: true`. Refuses any list that still holds reminders. |
+
+## Frameworks and APIs
+
+| Used | For | Reference |
+|---|---|---|
+| EventKit — `EKEventStore`, `EKReminder`, `EKCalendar`, `EKAlarm`, `EKRecurrenceRule`, `EKSource` | Every read and write | [EventKit](https://developer.apple.com/documentation/eventkit) |
+| CoreGraphics — `CGColor`, `CGColorSpace` | Reading and setting a list's colour | [Core Graphics](https://developer.apple.com/documentation/coregraphics) |
+| `NSRemindersFullAccessUsageDescription` | The consent string macOS shows | [Information Property List](https://developer.apple.com/documentation/bundleresources/information-property-list/nsremindersfullaccessusagedescription) |
+
+EventKit areas this server does not use: `EKEvent` and `EKParticipant` (a separate entity
+with its own permission), `EKStructuredLocation` (so no location-based alarm), and
+`EKRecurrenceDayOfWeek` — recurrence is read and summarised, never constructed.
 
 ## The rules worth knowing before you use it
 
@@ -152,9 +164,9 @@ System Settings → Privacy & Security → Reminders
 (Spanish UI: Ajustes del Sistema → Privacidad y seguridad → Recordatorios)
 ```
 
-Unlike calendars, reminders were never split into full and write-only access —
-`requestFullAccessToReminders` is the only request there is, so there is no half-granted
-state to fall into.
+`requestFullAccessToReminders` is the only access this server ever requests. EventKit can
+still report a write-only grant, and `reminders_status` says so plainly rather than
+failing later.
 
 The binary is **its own privacy subject**: Claude Desktop launches MCP servers through
 `Contents/Helpers/disclaimer`, which calls `responsibility_spawnattrs_setdisclaim`, so the
@@ -275,7 +287,7 @@ swift build
 swift test
 ```
 
-91 tests across three suites, all against an in-memory fake at a fixed instant. They need
+86 tests across three suites, all against an in-memory fake at a fixed instant. They need
 no permissions and never touch real reminders — see `CLAUDE.md`, whose first section is
 the rule that makes that non-negotiable.
 
