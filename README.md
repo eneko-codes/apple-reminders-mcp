@@ -287,7 +287,7 @@ swift build
 swift test
 ```
 
-86 tests across three suites, all against an in-memory fake at a fixed instant. They need
+The tests run entirely against an in-memory fake at a fixed instant. They need
 no permissions and never touch real reminders — see `CLAUDE.md`, whose first section is
 the rule that makes that non-negotiable.
 
