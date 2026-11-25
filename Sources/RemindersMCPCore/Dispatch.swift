@@ -12,34 +12,57 @@ public struct ReminderTools: ToolHandler {
     /// Injected so "is this overdue?" can be tested at a fixed instant instead of
     /// depending on when the suite happens to run.
     private let now: @Sendable () -> Date
+    private let timeout: Duration
 
     public init(
         store: any ReminderStore,
         calendar: Calendar = .current,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        timeout: Duration = Configuration.callTimeout
     ) {
         self.store = store
         self.calendar = calendar
         self.format = Format(calendar: calendar)
         self.now = now
+        self.timeout = timeout
     }
 
     public func handle(_ parameters: ToolCall) async -> ToolOutput {
         let started = ContinuousClock.now
-        do {
-            return ToolOutput(text: try await run(parameters), isError: false)
-        } catch let error as ToolError {
+        let outcome = await Deadline.run(within: timeout) {
+            do {
+                return Result<String, any Error>.success(try await run(parameters))
+            } catch {
+                return .failure(error)
+            }
+        }
+        switch outcome {
+        case .success(let text)?:
+            return ToolOutput(text: text, isError: false)
+        case .failure(let error)?:
+            Diagnostics.toolFailed(parameters.name, error: error, since: started)
+            guard let error = error as? ToolError else {
+                // EventKit's own wording is clipped, never trusted to be short.
+                return ToolOutput(
+                    text: ToolError.storeFailure(error.localizedDescription).message, isError: true)
+            }
+            return ToolOutput(text: error.message, isError: true)
+        case nil:
+            let error = ToolError.timedOut(
+                seconds: Int(timeout.components.seconds),
+                mayHaveChanged: ToolCatalog.writePrefixes.contains { parameters.name.hasPrefix($0) })
             Diagnostics.toolFailed(parameters.name, error: error, since: started)
             return ToolOutput(text: error.message, isError: true)
-        } catch {
-            Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return ToolOutput(
-                text: ToolError.storeFailure(error.localizedDescription).message, isError: true)
         }
     }
 
     private func run(_ parameters: ToolCall) async throws -> String {
+        guard let tool = ToolCatalog.all().first(where: { $0.name == parameters.name }) else {
+            throw ToolError.unknownTool(parameters.name)
+        }
         let arguments = Arguments(parameters.arguments, calendar: calendar)
+        // A renamed argument must fail where it is used, not run without its effect.
+        try arguments.only(ToolCatalog.argumentNames(of: tool))
 
         if parameters.name == ToolCatalog.statusName {
             return format.status(store.authorization(), binaryPath: Self.binaryPath)
@@ -49,17 +72,13 @@ public struct ReminderTools: ToolHandler {
 
         switch parameters.name {
         case ToolCatalog.listsName:
-            return format.listCatalogue(try await store.lists())
+            return try await listCatalogue(arguments)
 
         case ToolCatalog.searchName:
             return try await search(arguments)
 
         case ToolCatalog.getName:
-            let id = try arguments.requiredString("id")
-            guard let reminder = try await store.fetch(id: id) else {
-                throw ToolError.notFound(id: id)
-            }
-            return format.detail(reminder, now: now())
+            return try await get(arguments)
 
         case ToolCatalog.createName:
             return try await create(arguments)
@@ -83,8 +102,7 @@ public struct ReminderTools: ToolHandler {
             return try await deleteList(arguments)
 
         default:
-            throw ToolError.badArgument(
-                name: "name", reason: "'\(parameters.name)' is not a tool of this server")
+            throw ToolError.unknownTool(parameters.name)
         }
     }
 
@@ -98,40 +116,56 @@ public struct ReminderTools: ToolHandler {
 
     // MARK: Tools
 
+    private func listCatalogue(_ arguments: Arguments) async throws -> String {
+        let (limit, offset) = try arguments.page(
+            defaultLimit: Configuration.defaultListLimit, limits: Configuration.listLimitRange)
+        return format.listCatalogue(
+            try await store.lists(), limit: limit, offset: offset, notices: arguments.notices)
+    }
+
+    private func get(_ arguments: Arguments) async throws -> String {
+        let id = try arguments.requiredString("id")
+        let (characterOffset, maxCharacters) = try arguments.window()
+        guard let reminder = try await store.fetch(id: id) else {
+            throw ToolError.notFound(id: id)
+        }
+        return format.detailWindow(
+            reminder, characterOffset: characterOffset, maxCharacters: maxCharacters,
+            notices: arguments.notices, now: now())
+    }
+
     private func search(_ arguments: Arguments) async throws -> String {
         let titles = try arguments.stringArray("lists")
 
-        let requestedFrom = try arguments.optionalDate("due_from")
-        let requestedTo = try arguments.optionalDate("due_to")
+        let from = try arguments.optionalDate("from_date")
+        let to = try arguments.optionalDate("to_date")
 
-        let dueFrom = requestedFrom?.date
-        // A plain day as the upper bound means "through the end of that day". Taking it at
-        // face value would put the boundary at midnight and silently drop everything due
-        // on the very day the caller asked about.
-        let dueTo = requestedTo.map { parsed -> Date in
-            guard parsed.isDateOnly else { return parsed.date }
-            return calendar.date(byAdding: .day, value: 1, to: parsed.date) ?? parsed.date
+        // `to_date` is inclusive at the precision it was written: a plain day covers the
+        // whole day, `09:00` the whole minute. The store takes the first instant after it.
+        let upperBound = to?.firstInstantAfter(in: calendar)
+        if let from, let upperBound, upperBound <= from.date {
+            throw ToolError.dateRangeBackwards
         }
-        if let dueFrom, let dueTo, dueTo < dueFrom { throw ToolError.dueRangeBackwards }
 
         let status = try arguments.status("status")
-        let limit = try arguments.int(
-            "limit", default: Configuration.searchLimit, in: Configuration.searchLimitRange)
-        let offset = try arguments.int("offset", default: 0, in: Configuration.offsetRange)
+        let (limit, offset) = try arguments.page(
+            defaultLimit: Configuration.defaultSearchLimit, limits: Configuration.searchLimitRange)
 
-        let page = try await store.search(
+        let matches = try await store.search(
             query: arguments.optionalString("query"), listTitles: titles, status: status,
-            dueFrom: dueFrom, dueTo: dueTo, limit: limit, offset: offset)
+            dueFrom: from?.date, dueTo: upperBound
+        ).sorted(by: ReminderSummary.isOrderedBefore)
         return format.searchResults(
-            page, status: status, dueWindow: dueWindow(from: requestedFrom, to: requestedTo),
-            listTitles: titles, offset: offset, now: now())
+            matches, status: status, dueWindow: dueWindow(from: from, to: to),
+            listTitles: titles, limit: limit, offset: offset, notices: arguments.notices,
+            now: now())
     }
 
     /// Echoes the bounds **as the caller wrote them**, not as they were resolved.
     ///
-    /// The upper bound of a plain day is pushed to the following midnight so the day
-    /// itself is covered; reporting that resolved value back would tell someone who asked
-    /// for the 12th that they searched up to the 13th.
+    /// The upper bound is moved to the first instant after what was written so that the
+    /// day itself is covered; reporting that resolved value back would tell someone who
+    /// asked for the 12th that they searched up to the 13th.
     private func dueWindow(from: ParsedDate?, to: ParsedDate?) -> String? {
         guard from != nil || to != nil else { return nil }
         func text(_ parsed: ParsedDate?) -> String {
@@ -156,8 +190,8 @@ public struct ReminderTools: ToolHandler {
             title: try arguments.requiredString("title"),
             due: try arguments.optionalDate("due")?.due,
             priority: try arguments.priority("priority"))
-        draft.notes = arguments.optionalString("notes")
-        draft.url = arguments.optionalString("url")
+        draft.notes = try arguments.optionalString("notes")
+        draft.url = try arguments.optionalString("url")
 
         let requested = try arguments.alarms("alarms")
         let implied = Self.impliedAlarms(for: draft.due, given: requested)
@@ -188,11 +222,11 @@ public struct ReminderTools: ToolHandler {
         let existing = try await requireEditable(id)
 
         var changes = ReminderChanges()
-        changes.title = arguments.stringEdit("title")
+        changes.title = try arguments.stringEdit("title")
         changes.due = try arguments.dueEdit("due")
         changes.priority = try arguments.priorityEdit("priority")
-        changes.notes = arguments.stringEdit("notes")
-        changes.url = arguments.stringEdit("url")
+        changes.notes = try arguments.stringEdit("notes")
+        changes.url = try arguments.stringEdit("url")
         changes.alarmOffsetsMinutes = try arguments.alarmEdit("alarms")
 
         // An alarm is an offset from the due date, so removing the due date has to take the
@@ -224,7 +258,7 @@ public struct ReminderTools: ToolHandler {
 
     private func complete(_ arguments: Arguments) async throws -> String {
         let id = try arguments.requiredString("id")
-        let completed = arguments.bool("completed", default: true)
+        let completed = try arguments.bool("completed", default: true)
         let existing = try await requireWritable(id)
 
         // Re-completing an already-completed reminder would reset its completion date to
@@ -242,7 +276,7 @@ public struct ReminderTools: ToolHandler {
         let id = try arguments.requiredString("id")
         _ = try await requireEditable(id)
 
-        guard arguments.bool("confirm") else {
+        guard try arguments.bool("confirm") else {
             throw ToolError.confirmationRequired(action: "Deleting a reminder")
         }
         return format.deleted(try await store.delete(id: id))
@@ -256,7 +290,7 @@ public struct ReminderTools: ToolHandler {
         let existing = try await store.lists()
         let accounts = Self.accounts(in: existing)
 
-        let requestedAccount = arguments.optionalString("account")
+        let requestedAccount = try arguments.optionalString("account")
         if let requestedAccount, !accounts.contains(requestedAccount) {
             throw ToolError.accountNotFound(name: requestedAccount, available: accounts)
         }
@@ -285,7 +319,7 @@ public struct ReminderTools: ToolHandler {
             arguments, nameArgument: "list", offering: \.allowsListChanges)
         guard target.allowsListChanges else { throw ToolError.listImmutable(title: target.title) }
 
-        let requestedTitle = arguments.optionalString("title")
+        let requestedTitle = try arguments.optionalString("title")
         let requestedColor = try arguments.listColor("color")
         guard requestedTitle != nil || requestedColor != nil else {
             throw ToolError.nothingToChangeOnList
@@ -330,7 +364,7 @@ public struct ReminderTools: ToolHandler {
             throw ToolError.listNotEmpty(title: target.title, count: held)
         }
 
-        guard arguments.bool("confirm") else {
+        guard try arguments.bool("confirm") else {
             throw ToolError.confirmationRequired(action: "Deleting a list")
         }
         return format.deletedList(
@@ -354,7 +388,7 @@ public struct ReminderTools: ToolHandler {
         _ arguments: Arguments, nameArgument: String, offering capability: KeyPath<ListInfo, Bool>
     ) async throws -> ListInfo {
         let title = try arguments.requiredString(nameArgument)
-        let requestedAccount = arguments.optionalString("account")
+        let requestedAccount = try arguments.optionalString("account")
 
         let all = try await store.lists()
         var matches = all.filter { $0.title == title }

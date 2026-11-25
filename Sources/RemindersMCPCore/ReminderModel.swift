@@ -225,6 +225,33 @@ public struct ReminderSummary: Sendable, Equatable {
     }
 }
 
+extension ReminderSummary {
+    /// Soonest first, undated last, then by priority, title and finally id.
+    ///
+    /// The id ends the order so that it has no ties: two reminders with the same due date
+    /// and title must not swap places between the call that returned page one and the call
+    /// that returns page two.
+    public static func isOrderedBefore(_ left: ReminderSummary, _ right: ReminderSummary) -> Bool {
+        switch (left.due?.date, right.due?.date) {
+        case let (leftDue?, rightDue?) where leftDue != rightDue: return leftDue < rightDue
+        case (nil, .some): return false
+        case (.some, nil): return true
+        default: break
+        }
+        if left.priority != right.priority {
+            // rfc5545 runs 1 (highest) to 9 (lowest), with 0 meaning none, which has to
+            // sort after every real priority rather than before all of them.
+            let rank = { (priority: Priority) in priority == .none ? Int.max : priority.rfc5545 }
+            return rank(left.priority) < rank(right.priority)
+        }
+        switch left.title.localizedCaseInsensitiveCompare(right.title) {
+        case .orderedAscending: return true
+        case .orderedDescending: return false
+        case .orderedSame: return left.id < right.id
+        }
+    }
+}
+
 public struct ReminderDetail: Sendable, Equatable {
     public let id: String
     public let title: String
@@ -353,15 +380,4 @@ public struct ReminderChanges: Sendable, Equatable {
     }
 
     public var isEmpty: Bool { changedFields.isEmpty }
-}
-
-public struct ReminderSearchPage: Sendable, Equatable {
-    public let results: [ReminderSummary]
-    /// Total matches, not the number returned, so the formatter can say what it withheld.
-    public let total: Int
-
-    public init(results: [ReminderSummary], total: Int) {
-        self.results = results
-        self.total = total
-    }
 }

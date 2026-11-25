@@ -28,9 +28,9 @@ Not affiliated with or endorsed by Apple Inc.
 | Tool | Kind | What it does |
 |---|---|---|
 | `reminders_status` | read | Reports the permission, the binary in use and its defaults. Reads no reminders. |
-| `reminder_lists` | read | Every list, its account, and whether it accepts writes. |
-| `reminders_search` | read | Reminders by text, list, completion state and due date. Echoes the filters it used. |
-| `reminder_get` | read | Full record for one id, including whether it can still be edited. |
+| `reminder_lists` | read | Lists, a page at a time (`limit`, `offset`), ordered by name then account, with their accounts and whether each accepts writes. |
+| `reminders_search` | read | Reminders by text, list, completion state and due date (`from_date`, `to_date`), a page at a time (`limit`, `offset`). Echoes the filters it used. |
+| `reminder_get` | read | Full record for one id, through a window of characters (`character_offset`, `max_characters`), including whether it can still be edited. |
 | `create_reminder` | write | Adds a reminder. Cannot create a repeating one. |
 | `update_reminder` | write | Changes fields. Refuses reminders already completed. |
 | `complete_reminder` | write | Ticks one off, or reopens one ticked off by mistake. |
@@ -85,8 +85,22 @@ the question is about what has already been done.
 ```
 
 A reminder with no due date at all is perfectly normal, and unfiltered searches list the
-undated ones last. Passing a plain day as `due_to` covers that **whole day**, not up to
-its midnight.
+undated ones last. `from_date` and `to_date` bound the due date and are both inclusive at the precision
+written: a plain day as `to_date` covers that **whole day**, and `2026-08-12T09:00`
+covers that whole minute. A day that does not exist, such as 31 April, is refused.
+
+**Results are bounded, and say what they left out.** A listing returns one page and, before
+the data, says how many rows exist and which `offset` gives the next page. A search is
+ordered by due date (soonest first, undated last), then priority, title and id, so that
+pages never overlap. Titles and list names in a search row are clipped, and the notice says
+so; `reminder_get` has them whole, through a window (`character_offset`, `max_characters`).
+Receipts clip each text the same way, and `delete_reminder` returns what it removed as the
+call that restores it, cut with a stated sentence if its notes are too long to hold. A
+number outside its range is moved to the nearest allowed one and the result says which was
+used. An argument a tool does not list is refused, with the names that are allowed. A call
+that does not finish within its deadline is abandoned and says whether a change may still
+have been made. The sizes are constants in `Configuration`; the tool descriptions quote
+them from there.
 
 **A due time gets an alarm.** EventKit creates none by itself — unlike Reminders.app — so
 a reminder saved with a time would never actually notify. `create_reminder` adds one at

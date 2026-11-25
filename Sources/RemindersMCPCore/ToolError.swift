@@ -20,7 +20,12 @@ public enum ToolError: Error, Equatable {
     case missingArgument(String)
     case badArgument(name: String, reason: String)
     case badDate(argument: String, value: String)
-    case dueRangeBackwards
+    case nonexistentDate(argument: String, value: String)
+    case dateRangeBackwards
+    case alarmTooFar
+    case unknownArguments(names: [String], allowed: [String])
+    case unknownTool(String)
+    case timedOut(seconds: Int, mayHaveChanged: Bool)
     case notFound(id: String)
     case listNotFound(title: String, available: [String])
     case listReadOnly(title: String)
@@ -36,6 +41,8 @@ public enum ToolError: Error, Equatable {
     case nothingToUpdate
     case storeFailure(String)
 
+    /// Every caller's or store's text an error repeats goes through `ToolStandard.echo`,
+    /// `few` or `cut`, so an error stays short whatever it was given.
     public var message: String {
         switch self {
         case .notAuthorized(let status):
@@ -47,9 +54,31 @@ public enum ToolError: Error, Equatable {
         case .badArgument(let name, let reason):
             return "Argument '\(name)' is not valid: \(reason)"
 
+        case .unknownArguments(let names, let allowed):
+            let allowedText = allowed.isEmpty ? "none" : allowed.joined(separator: ", ")
+            return """
+                Not an argument of this tool: \(Self.few(names)).
+
+                Allowed: \(allowedText)
+                """
+
+        case .unknownTool(let name):
+            return "'\(ToolStandard.echo(name))' is not a tool of this server."
+
+        case .timedOut(let seconds, let mayHaveChanged):
+            let effect =
+                mayHaveChanged
+                ? "The change may still have been made: look before repeating it."
+                : "Nothing was changed."
+            return """
+                The call did not finish within \(seconds) seconds and was abandoned. \(effect)
+
+                Ask for less: a narrower filter or a smaller limit.
+                """
+
         case .badDate(let argument, let value):
             return """
-                Argument '\(argument)' is not a date this server accepts: '\(value)'
+                Argument '\(argument)' is not a date this server accepts: '\(ToolStandard.echo(value))'
 
                 Use one of:
                 \(DateParsing.acceptedForms)
@@ -57,12 +86,30 @@ public enum ToolError: Error, Equatable {
                 A plain day means due that day with no particular time.
                 """
 
-        case .dueRangeBackwards:
-            return "'due_to' is earlier than 'due_from'. That range can never match."
+        case .nonexistentDate(let argument, let value):
+            return """
+                Argument '\(argument)' names a day or time that does not exist: \
+                '\(ToolStandard.echo(value))'
+
+                Check the day against its month, and the time against any clock change.
+                """
+
+        case .dateRangeBackwards:
+            return "'to_date' is earlier than 'from_date'. That range can never match."
+
+        case .alarmTooFar:
+            let range = Configuration.alarmMinutesRange
+            return """
+                An alarm offset is outside \(range.lowerBound)–\(range.upperBound) minutes, which \
+                is 366 days either side of the due date.
+
+                An offset is refused, not moved: the nearest allowed one would be a different \
+                alarm from the one asked for.
+                """
 
         case .notFound(let id):
             return """
-                No reminder exists with id '\(id)'.
+                No reminder exists with id '\(ToolStandard.echo(id))'.
 
                 Reminder identifiers are not sync-proof: resynchronising an account
                 regenerates them. Find it again with reminders_search rather than reusing
@@ -74,11 +121,9 @@ public enum ToolError: Error, Equatable {
             // caller. Creating a reminder needs a list that accepts contents, renaming one
             // needs a list whose own attributes can change, and EventKit answers those two
             // questions separately — so a fixed label would misdescribe one of them.
-            let usable =
-                available.isEmpty
-                ? "(none this tool can use)" : available.joined(separator: ", ")
+            let usable = available.isEmpty ? "(none this tool can use)" : Self.few(available)
             return """
-                No reminder list named '\(title)'.
+                No reminder list named '\(ToolStandard.echo(title))'.
 
                 Lists this tool can use: \(usable)
 
@@ -88,7 +133,7 @@ public enum ToolError: Error, Equatable {
 
         case .listReadOnly(let title):
             return """
-                List '\(title)' is read-only, so nothing can be written to it.
+                List '\(ToolStandard.echo(title))' is read-only, so nothing can be written to it.
 
                 Shared lists you do not own can be read-only. Call reminder_lists to see
                 which ones accept writes.
@@ -96,19 +141,19 @@ public enum ToolError: Error, Equatable {
 
         case .listAmbiguous(let title, let accounts):
             return """
-                More than one reminder list is called '\(title)'.
+                More than one reminder list is called '\(ToolStandard.echo(title))'.
 
-                It exists in: \(accounts.joined(separator: ", "))
+                It exists in: \(Self.few(accounts))
 
                 This server will not guess which one you mean: a reminder filed in the
                 wrong one is lost until someone goes looking, and renaming or deleting the
                 wrong one is not recoverable. Say which account you mean:
-                  account="\(accounts.first ?? "…")"
+                  account="\(ToolStandard.echo(accounts.first ?? "…"))"
                 """
 
         case .listAlreadyExists(let title, let accountName):
             return """
-                A list called '\(title)' already exists in \(accountName).
+                A list called '\(ToolStandard.echo(title))' already exists in \(ToolStandard.echo(accountName)).
 
                 Two lists sharing a name in one account cannot be told apart afterwards:
                 every tool here addresses a list by its name, so neither could be renamed
@@ -117,7 +162,7 @@ public enum ToolError: Error, Equatable {
 
         case .listImmutable(let title):
             return """
-                List '\(title)' cannot be renamed, recoloured or deleted.
+                List '\(ToolStandard.echo(title))' cannot be renamed, recoloured or deleted.
 
                 Reminders marks some lists as fixed — a subscribed list, or one managed by
                 the account rather than by you. This is the account's rule, not this
@@ -126,7 +171,7 @@ public enum ToolError: Error, Equatable {
 
         case .listNotEmpty(let title, let count):
             return """
-                List '\(title)' still holds \(count) reminder\(count == 1 ? "" : "s").
+                List '\(ToolStandard.echo(title))' still holds \(count) reminder\(count == 1 ? "" : "s").
 
                 Deleting a list deletes every reminder in it, completed ones included, and
                 that is exactly the record this server refuses to destroy. There is no
@@ -137,9 +182,9 @@ public enum ToolError: Error, Equatable {
                 """
 
         case .accountNotFound(let name, let available):
-            let accounts = available.isEmpty ? "(none available)" : available.joined(separator: ", ")
+            let accounts = available.isEmpty ? "(none available)" : Self.few(available)
             return """
-                No account named '\(name)' can hold reminder lists.
+                No account named '\(ToolStandard.echo(name))' can hold reminder lists.
 
                 Available: \(accounts)
 
@@ -159,7 +204,7 @@ public enum ToolError: Error, Equatable {
             return """
                 Cannot change a reminder that is already completed.
 
-                  \(title) · completed \(completed)
+                  \(ToolStandard.echo(title)) · completed \(completed)
 
                 A completed reminder is the record that the thing was done, and this server
                 does not rewrite or delete that record even with permission.
@@ -189,15 +234,26 @@ public enum ToolError: Error, Equatable {
             return """
                 No field to change was given.
 
-                Pass a field with a value to set it, or with null to clear it. Omitting a
-                field leaves it untouched.
+                Pass a field with a value to set it, or with an empty string to clear it.
+                Omitting a field leaves it untouched.
 
                 To tick a reminder off or reopen it, use complete_reminder instead.
                 """
 
         case .storeFailure(let detail):
-            return "Reminders returned an error: \(detail)"
+            return "Reminders returned an error: \(ToolError.clip(detail, to: Configuration.storeFailureWidth))"
         }
+    }
+
+    /// At most `Configuration.fewNames` names, each clipped, and how many were left out.
+    static func few(_ names: [String]) -> String {
+        let shown = names.prefix(Configuration.fewNames).map(ToolStandard.echo)
+        let rest = names.count - shown.count
+        return shown.joined(separator: ", ") + (rest > 0 ? " and \(rest) more" : "")
+    }
+
+    static func clip(_ text: String, to width: Int) -> String {
+        text.count > width ? String(text.prefix(width)) + "…" : text
     }
 
     static func authorizationMessage(_ status: ReminderAuthorization) -> String {

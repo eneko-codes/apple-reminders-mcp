@@ -1,18 +1,40 @@
 import Foundation
 
 public struct ParsedDate: Sendable, Equatable {
+
+    /// How finely the caller wrote the date. A range that ends on it runs to the end of
+    /// what was written: the whole day, the whole minute or the second.
+    public enum Precision: Sendable, Equatable {
+        case day
+        case minute
+        case second
+    }
+
     public let date: Date
+    public let precision: Precision
+
+    public init(date: Date, precision: Precision) {
+        self.date = date
+        self.precision = precision
+    }
+
     /// True when the caller wrote only a day. `create_reminder` uses this to decide
     /// whether the due date carries a time: there is no separate flag, because two
     /// sources of truth for the same fact drift apart.
-    public let isDateOnly: Bool
-
-    public init(date: Date, isDateOnly: Bool) {
-        self.date = date
-        self.isDateOnly = isDateOnly
-    }
+    public var isDateOnly: Bool { precision == .day }
 
     public var due: DueDate { DueDate(date: date, isDateOnly: isDateOnly) }
+
+    /// The first instant after what was written, which is where a range that includes this
+    /// date ends: the next midnight for a plain day, the next minute for `09:00`, the next
+    /// second for `09:00:00`.
+    public func firstInstantAfter(in calendar: Calendar) -> Date {
+        switch precision {
+        case .day: return calendar.date(byAdding: .day, value: 1, to: date) ?? date
+        case .minute: return date.addingTimeInterval(60)
+        case .second: return date.addingTimeInterval(1)
+        }
+    }
 }
 
 /// Parsing and rendering of the three date forms this server accepts.
@@ -34,17 +56,17 @@ public enum DateParsing {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let components = dayComponents(text) {
-            guard let day = calendar.date(from: components) else {
-                throw ToolError.badDate(argument: argument, value: text)
-            }
-            return ParsedDate(date: calendar.startOfDay(for: day), isDateOnly: true)
+            guard let day = calendar.date(from: components),
+                exists(components, [.year, .month, .day], as: day, in: calendar)
+            else { throw ToolError.nonexistentDate(argument: argument, value: text) }
+            return ParsedDate(date: calendar.startOfDay(for: day), precision: .day)
         }
 
-        if let components = localComponents(text) {
-            guard let moment = calendar.date(from: components) else {
-                throw ToolError.badDate(argument: argument, value: text)
-            }
-            return ParsedDate(date: moment, isDateOnly: false)
+        if let (components, precision) = localComponents(text) {
+            guard let moment = calendar.date(from: components),
+                exists(components, [.year, .month, .day, .hour, .minute, .second], as: moment, in: calendar)
+            else { throw ToolError.nonexistentDate(argument: argument, value: text) }
+            return ParsedDate(date: moment, precision: precision)
         }
 
         // Only reached for a string carrying its own offset or Z suffix, where the
@@ -57,11 +79,35 @@ public enum DateParsing {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = options
             if let moment = formatter.date(from: text) {
-                return ParsedDate(date: moment, isDateOnly: false)
+                // The day is checked apart from the formatter, which is not documented to
+                // refuse a day its month does not have.
+                guard let day = dayComponents(String(text.prefix(10))), dayExists(day) else {
+                    throw ToolError.nonexistentDate(argument: argument, value: text)
+                }
+                return ParsedDate(date: moment, precision: .second)
             }
         }
 
         throw ToolError.badDate(argument: argument, value: text)
+    }
+
+    /// Whether `date` is what `components` asked for. `Calendar.date(from:)` does not refuse
+    /// 30 February or a local time the clocks skip: it rolls forward to a moment that does
+    /// exist, and a deadline would move without a word.
+    private static func exists(
+        _ components: DateComponents, _ fields: Set<Calendar.Component>, as date: Date,
+        in calendar: Calendar
+    ) -> Bool {
+        let actual = calendar.dateComponents(fields, from: date)
+        return fields.allSatisfy { actual.value(for: $0) == (components.value(for: $0) ?? 0) }
+    }
+
+    /// Whether the proleptic Gregorian calendar has this day at all, in any time zone.
+    private static func dayExists(_ components: DateComponents) -> Bool {
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = TimeZone(secondsFromGMT: 0) ?? gregorian.timeZone
+        guard let day = gregorian.date(from: components) else { return false }
+        return exists(components, [.year, .month, .day], as: day, in: gregorian)
     }
 
     /// `YYYY-MM-DD` and nothing else.
@@ -74,8 +120,9 @@ public enum DateParsing {
         return DateComponents(year: year, month: month, day: day)
     }
 
-    /// `YYYY-MM-DDTHH:MM` or `YYYY-MM-DDTHH:MM:SS`, with no offset suffix.
-    private static func localComponents(_ text: String) -> DateComponents? {
+    /// `YYYY-MM-DDTHH:MM` or `YYYY-MM-DDTHH:MM:SS`, with no offset suffix, and which of the
+    /// two it was.
+    private static func localComponents(_ text: String) -> (DateComponents, ParsedDate.Precision)? {
         let halves = text.split(separator: "T", omittingEmptySubsequences: false)
         guard halves.count == 2, var day = dayComponents(String(halves[0])) else { return nil }
 
@@ -95,7 +142,7 @@ public enum DateParsing {
         day.hour = hour
         day.minute = minute
         day.second = second
-        return day
+        return (day, pieces.count == 3 ? .second : .minute)
     }
 
     // MARK: EventKit date components

@@ -29,6 +29,11 @@ public enum ToolCatalog {
         ]
     }
 
+    /// The names a tool's schema lists: the only arguments a call to it may carry.
+    static func argumentNames(of tool: Tool) -> [String] {
+        Array(tool.inputSchema.objectValue?["properties"]?.objectValue?.keys ?? [:].keys)
+    }
+
     // MARK: Schema helpers
 
     private static func object(properties: [String: Value], required: [String] = []) -> Value {
@@ -56,15 +61,18 @@ public enum ToolCatalog {
         ])
     }
 
-    private static func enumeration(_ cases: [String], default def: String, description: String)
+    /// `default` is left out where an absent argument means "leave it alone", as on an
+    /// update: a stated default there would promise a change the code does not make.
+    private static func enumeration(_ cases: [String], default def: String? = nil, description: String)
         -> Value
     {
-        .object([
+        var schema: [String: Value] = [
             "type": .string("string"),
             "enum": .array(cases.map { .string($0) }),
-            "default": .string(def),
             "description": .string(description),
-        ])
+        ]
+        if let def { schema["default"] = .string(def) }
+        return .object(schema)
     }
 
     /// How to say "empty this field" in a schema that cannot advertise null.
@@ -117,17 +125,38 @@ public enum ToolCatalog {
             readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
     )
 
+    /// The `limit` and `offset` properties of a listing, from the constants the code enforces.
+    private static func pageProperties(
+        things: String, limits: ClosedRange<Int>, default def: Int
+    ) -> [String: Value] {
+        [
+            "limit": integer(
+                "Most \(things) to return: \(limits.lowerBound)–\(limits.upperBound), default \(def).",
+                minimum: limits.lowerBound, maximum: limits.upperBound, default: def),
+            "offset": integer(
+                "How many \(things) to skip; the notice before the data gives the next value.",
+                minimum: Configuration.offsetRange.lowerBound,
+                maximum: Configuration.offsetRange.upperBound, default: 0),
+        ]
+    }
+
     static let lists = Tool(
         name: listsName,
         title: "List reminder lists",
         description: """
-            Lists every reminder list with its account, whether it accepts writes, and which \
-            is the default for new reminders.
+            Lists reminder lists, \(Configuration.defaultListLimit) a page, ordered by name and \
+            then account, each with its account, whether it accepts writes, and which is the \
+            default for new reminders. A page that is not the whole says how many lists exist \
+            and which offset gives the next page; 'limit' (\(Configuration.listLimitRange.lowerBound)–\
+            \(Configuration.listLimitRange.upperBound)) and 'offset' reach the rest.
 
             Call this before create_reminder if you are not certain a list exists under that \
             exact name — a shared list you do not own can be read-only and will refuse writes.
             """,
-        inputSchema: object(properties: [:]),
+        inputSchema: object(
+            properties: pageProperties(
+                things: "lists", limits: Configuration.listLimitRange,
+                default: Configuration.defaultListLimit)),
         annotations: .init(
             readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
     )
@@ -137,13 +166,17 @@ public enum ToolCatalog {
         title: "Search reminders",
         description: """
             Finds reminders, optionally filtered by text, list, completion state and due \
-            date. Returns one line per reminder with its id, and echoes the filters it \
-            actually used.
+            date. Returns \(Configuration.defaultSearchLimit) a page, one line per reminder \
+            with its id, ordered by due date (soonest first, undated last), then priority, \
+            title and id, and echoes the filters it used. Titles and list names are clipped \
+            to \(Configuration.rowFieldWidth) characters; reminder_get reads one in full. A \
+            page that is not the whole says how many reminders match and which offset gives \
+            the next page; 'limit' (\(Configuration.searchLimitRange.lowerBound)–\
+            \(Configuration.searchLimitRange.upperBound)) and 'offset' reach the rest.
 
-            Searches OPEN reminders by default — pass status="completed" or "any" to see \
-            ones already ticked off. Results are ordered by due date, soonest first, with \
-            undated ones last; up to \(Configuration.searchLimit) are returned unless \
-            'limit' says otherwise. Always search before reminder_get, update_reminder, \
+            Searches OPEN reminders by default — pass status="completed" or "any" to see ones \
+            already ticked off. 'from_date' and 'to_date' bound the DUE date, both inclusive \
+            at the precision written. Always search before reminder_get, update_reminder, \
             complete_reminder or delete_reminder — ids come from here.
             """,
         inputSchema: object(
@@ -162,27 +195,21 @@ public enum ToolCatalog {
                         "my reminders"; "completed" looks at what has been done; "any" \
                         covers both.
                         """),
-                "due_from": string(
+                "from_date": string(
                     """
-                    Only reminders due at or after this. \(dateHelp) Undated reminders \
+                    Only reminders due on or after this. \(dateHelp) Undated reminders \
                     are excluded whenever either bound is given.
                     """),
-                "due_to": string(
+                "to_date": string(
                     """
-                    Only reminders due before this — except that a plain day covers \
-                    that whole day, so "2026-08-12" includes something due at 18:00 \
-                    on the 12th. \(dateHelp)
+                    Only reminders due on or before this, inclusive at the precision \
+                    written: "2026-08-12" includes something due at 18:00 on the 12th, and \
+                    "2026-08-12T09:00" includes 09:00 but not 09:01. \(dateHelp)
                     """),
-                "limit": integer(
-                    "Maximum number of reminders to return.",
-                    minimum: Configuration.searchLimitRange.lowerBound,
-                    maximum: Configuration.searchLimitRange.upperBound,
-                    default: Configuration.searchLimit),
-                "offset": integer(
-                    "Skip this many matches; use it to page.",
-                    minimum: Configuration.offsetRange.lowerBound,
-                    maximum: Configuration.offsetRange.upperBound, default: 0),
-            ]),
+            ].merging(
+                pageProperties(
+                    things: "reminders", limits: Configuration.searchLimitRange,
+                    default: Configuration.defaultSearchLimit)) { first, _ in first }),
         annotations: .init(
             readOnlyHint: true, destructiveHint: false, idempotentHint: true,
             openWorldHint: false)
@@ -193,13 +220,29 @@ public enum ToolCatalog {
         title: "Full reminder record",
         description: """
             Returns everything stored for one reminder: due date, list, priority, notes, url, \
-            alarms and recurrence. Also reports whether it can still be edited.
+            alarms and recurrence, as text of which a call returns the first \
+            \(Configuration.defaultMaxCharacters) characters. Also reports whether it can \
+            still be edited. A longer record says how many characters it has and which \
+            'character_offset' returns the rest; 'max_characters' \
+            (\(Configuration.maxCharactersRange.lowerBound)–\(Configuration.maxCharactersRange.upperBound)) \
+            sets the window.
 
             Needs an id from reminders_search. Reminder ids are not sync-proof, so do not \
             reuse one from an earlier conversation without searching again.
             """,
         inputSchema: object(
-            properties: ["id": string("Identifier returned by reminders_search.")],
+            properties: [
+                "id": string("Identifier returned by reminders_search."),
+                "character_offset": integer(
+                    "How many characters of the record to skip.",
+                    minimum: Configuration.offsetRange.lowerBound,
+                    maximum: Configuration.offsetRange.upperBound, default: 0),
+                "max_characters": integer(
+                    "Most characters to return.",
+                    minimum: Configuration.maxCharactersRange.lowerBound,
+                    maximum: Configuration.maxCharactersRange.upperBound,
+                    default: Configuration.defaultMaxCharacters),
+            ],
             required: ["id"]),
         annotations: .init(
             readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
@@ -216,7 +259,9 @@ public enum ToolCatalog {
 
             A 'due' of 2026-08-12 means that day with no particular time; add a time and an \
             alarm is set for it automatically, since EventKit creates none on its own. It \
-            CANNOT create a repeating reminder — that has to be done in Reminders.app.
+            CANNOT create a repeating reminder — that has to be done in Reminders.app. The \
+            receipt clips each text to \(Configuration.rowFieldWidth) characters; reminder_get \
+            reads the whole.
             """,
         inputSchema: object(
             properties: [
@@ -255,7 +300,7 @@ public enum ToolCatalog {
                 "title": string("New title."),
                 "due": string("New due date. \(dateHelp) \(clearingHint)"),
                 "priority": enumeration(
-                    Priority.allCases.map(\.rawValue), default: "none",
+                    Priority.allCases.map(\.rawValue),
                     description: "New priority. \(priorityHelp) \"none\" clears it."),
                 "notes": string("New notes. \(clearingHint)"),
                 "url": string("New URL. \(clearingHint)"),
@@ -401,8 +446,9 @@ public enum ToolCatalog {
         name: deleteName,
         title: "Delete a reminder",
         description: """
-            Permanently deletes a reminder. Requires confirm=true and returns the full record \
-            it removed together with a create_reminder call that would restore it.
+            Permanently deletes a reminder. Requires confirm=true and returns what it removed \
+            as a create_reminder call that would restore it. Notes longer than \
+            \(Configuration.deletedRecordCharacters) characters are cut, and the receipt says so.
 
             REFUSES any reminder that is already completed. Clearing finished reminders in \
             bulk is a job for Reminders.app, not for this server.
