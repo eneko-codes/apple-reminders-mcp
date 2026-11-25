@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 import Testing
 
 @testable import RemindersMCPCore
@@ -17,10 +16,10 @@ struct ConfigurationTests {
     ) async -> (text: String, isError: Bool) {
         let tools = ReminderTools(store: store, calendar: Fixtures.calendar, now: { Fixtures.now })
         let result = await tools.handle(.init(name: name, arguments: arguments))
-        guard case .text(let text, _, _) = result.content.first else {
+        guard case .text(let text) = result.content.first else {
             return ("(no text content)", true)
         }
-        return (text, result.isError ?? false)
+        return (text, result.isError)
     }
 
     // MARK: Every list is visible unconditionally
