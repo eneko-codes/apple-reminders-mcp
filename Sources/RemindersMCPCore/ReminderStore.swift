@@ -46,16 +46,17 @@ public protocol ReminderStore: Sendable {
     /// which would be a way round the rule that a completed reminder is the record.
     func deleteList(title: String, accountName: String) async throws -> ListInfo
 
-    /// `dueFrom`/`dueTo` bound the due date. Reminders with no due date fall outside any
-    /// window by definition, so they are excluded whenever either bound is given and
-    /// included — sorted last — when neither is.
+    /// Every match, in no particular order: the tool sorts and pages them, so that one
+    /// order, stated to the caller, governs every page. EventKit hands back the whole
+    /// matching set in one callback regardless, so there is nothing to gain by paging here.
     ///
-    /// `offset` indexes into the matches. EventKit has no cursor of its own, and it hands
-    /// back the whole matching set in one callback regardless.
+    /// `dueFrom` is included and `dueTo` is excluded: the tool passes the first instant
+    /// after what the caller wrote. Reminders with no due date fall outside any window by
+    /// definition, so they are excluded whenever either bound is given.
     func search(
         query: String?, listTitles: [String], status: CompletionFilter,
-        dueFrom: Date?, dueTo: Date?, limit: Int, offset: Int
-    ) async throws -> ReminderSearchPage
+        dueFrom: Date?, dueTo: Date?
+    ) async throws -> [ReminderSummary]
 
     func fetch(id: String) async throws -> ReminderDetail?
 

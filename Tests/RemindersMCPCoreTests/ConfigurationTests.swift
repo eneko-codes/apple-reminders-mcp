@@ -52,19 +52,19 @@ struct ConfigurationTests {
     @Test("The default page size appears in the tool description")
     func descriptionStatesTheFixedLimit() {
         let search = ToolCatalog.all().first { $0.name == "reminders_search" }
-        #expect(search?.description?.contains("\(Configuration.searchLimit)") == true)
+        #expect(search?.description?.contains("\(Configuration.defaultSearchLimit)") == true)
     }
 
     @Test("The caller's own 'limit' still overrides the default")
     func explicitLimitStillWins() async {
         let result = await call("reminders_search", ["limit": .int(1)])
-        #expect(result.text.contains("call again with offset=1"))
+        #expect(result.text.contains(" Pass offset=1 for the next page."))
     }
 
     @Test("reminders_status reports the fixed default")
     func statusReportsTheFixedDefault() async {
         let result = await call("reminders_status")
         #expect(result.text.contains("default results"))
-        #expect(result.text.contains("\(Configuration.searchLimit)"))
+        #expect(result.text.contains("\(Configuration.defaultSearchLimit)"))
     }
 }

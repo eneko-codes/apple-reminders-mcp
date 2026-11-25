@@ -96,13 +96,12 @@ final class FakeReminderStore: ReminderStore, @unchecked Sendable {
         listCatalogue.firstIndex { $0.title == title && $0.sourceName == accountName }
     }
 
-    /// Mirrors `SystemReminderStore`, and deliberately shares its comparator rather than
-    /// reimplementing it: a fake that sorts differently from the real store would let a
-    /// paging bug pass the suite.
+    /// Hands back the matches in reverse of any order the tool states, so that a tool
+    /// which forgot to sort fails the paging tests instead of passing by luck.
     func search(
         query: String?, listTitles: [String], status: CompletionFilter,
-        dueFrom: Date?, dueTo: Date?, limit: Int, offset: Int
-    ) async throws -> ReminderSearchPage {
+        dueFrom: Date?, dueTo: Date?
+    ) async throws -> [ReminderSummary] {
         var matches = reminders
         switch status {
         case .incomplete: matches = matches.filter { !$0.isCompleted }
@@ -126,9 +125,9 @@ final class FakeReminderStore: ReminderStore, @unchecked Sendable {
                 return true
             }
         }
-        matches.sort(by: SystemReminderStore.ordering)
-        let page = matches.dropFirst(offset).prefix(limit).map(SystemReminderStore.summary(from:))
-        return ReminderSearchPage(results: Array(page), total: matches.count)
+        return matches.map(SystemReminderStore.summary(from:)).sorted {
+            !ReminderSummary.isOrderedBefore($0, $1)
+        }
     }
 
     func fetch(id: String) async throws -> ReminderDetail? {

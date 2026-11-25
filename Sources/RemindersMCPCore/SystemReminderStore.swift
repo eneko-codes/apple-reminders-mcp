@@ -245,8 +245,8 @@ public struct SystemReminderStore: ReminderStore {
 
     public func search(
         query: String?, listTitles: [String], status: CompletionFilter,
-        dueFrom: Date?, dueTo: Date?, limit: Int, offset: Int
-    ) async throws -> ReminderSearchPage {
+        dueFrom: Date?, dueTo: Date?
+    ) async throws -> [ReminderSummary] {
         let store = EKEventStore()
 
         let calendars: [EKCalendar]?
@@ -254,7 +254,7 @@ public struct SystemReminderStore: ReminderStore {
         case .everyList: calendars = nil
         case .lists(let list): calendars = list
         // Fail closed: a filter that matched no list means no reminders, not all of them.
-        case .nothingMatched: return ReminderSearchPage(results: [], total: 0)
+        case .nothingMatched: return []
         }
 
         // Each branch is EventKit's own indexed query for that completion state, which is
@@ -275,7 +275,7 @@ public struct SystemReminderStore: ReminderStore {
             predicate = store.predicateForReminders(in: calendars)
         }
 
-        return await page(matching: predicate, in: store) { details in
+        return await summaries(matching: predicate, in: store) { details in
             var matches = details
             if let needle = query?.trimmingCharacters(in: .whitespacesAndNewlines), !needle.isEmpty
             {
@@ -294,32 +294,8 @@ public struct SystemReminderStore: ReminderStore {
                     return true
                 }
             }
-            return matches.sorted(by: Self.ordering)
-        } page: { sorted in
-            let window = sorted.dropFirst(offset).prefix(limit).map(Self.summary(from:))
-            return ReminderSearchPage(results: Array(window), total: sorted.count)
+            return matches.map(Self.summary(from:))
         }
-    }
-
-    /// Soonest first, undated last, then by priority and finally by title.
-    ///
-    /// The tie-breakers exist so paging is stable: two reminders with the same due date
-    /// must not swap places between the call that returned page one and the call that
-    /// returns page two.
-    static func ordering(_ left: ReminderDetail, _ right: ReminderDetail) -> Bool {
-        switch (left.due?.date, right.due?.date) {
-        case let (leftDue?, rightDue?) where leftDue != rightDue: return leftDue < rightDue
-        case (nil, .some): return false
-        case (.some, nil): return true
-        default: break
-        }
-        if left.priority != right.priority {
-            // rfc5545 runs 1 (highest) to 9 (lowest), with 0 meaning none — which has to
-            // sort after every real priority rather than before all of them.
-            let rank = { (priority: Priority) in priority == .none ? Int.max : priority.rfc5545 }
-            return rank(left.priority) < rank(right.priority)
-        }
-        return left.title.localizedCaseInsensitiveCompare(right.title) == .orderedAscending
     }
 
     /// Bridges EventKit's callback-based fetch into async, converting inside the callback.
@@ -328,16 +304,15 @@ public struct SystemReminderStore: ReminderStore {
     /// filtering closure therefore works on already-converted values. The block is
     /// documented to run once, and `withCheckedContinuation` traps rather than corrupting
     /// anything if that ever stops being true.
-    private func page(
+    private func summaries(
         matching predicate: NSPredicate,
         in store: EKEventStore,
-        filter: @escaping @Sendable ([ReminderDetail]) -> [ReminderDetail],
-        page: @escaping @Sendable ([ReminderDetail]) -> ReminderSearchPage
-    ) async -> ReminderSearchPage {
+        filter: @escaping @Sendable ([ReminderDetail]) -> [ReminderSummary]
+    ) async -> [ReminderSummary] {
         await withCheckedContinuation { continuation in
             store.fetchReminders(matching: predicate) { reminders in
                 let details = (reminders ?? []).map(Self.detail(from:))
-                continuation.resume(returning: page(filter(details)))
+                continuation.resume(returning: filter(details))
             }
         }
     }

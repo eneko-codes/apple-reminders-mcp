@@ -3,13 +3,22 @@ import Foundation
 public enum RemindersMCPServer {
 
     public static let name = "apple-reminders-mcp"
-    public static let version = "1.0.1"
+    public static let version = "2.0.0"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
     /// once: the id workflow, the rule about completed reminders, and where policy
     /// actually lives.
     public static let instructions = """
         Access to the macOS Reminders app through EventKit.
+
+        Listings come in pages: reminders_search \(Configuration.defaultSearchLimit) and \
+        reminder_lists \(Configuration.defaultListLimit) by default. A notice before the data \
+        says how many exist and which offset gives the next page. reminder_get returns \
+        the first \(Configuration.defaultMaxCharacters) characters of a record; pass \
+        character_offset for the rest. Titles and list names in a search row are clipped to \
+        \(Configuration.rowFieldWidth) characters, and reminder_get has them whole. A number \
+        outside its range is moved to the nearest allowed one and the result says so; an \
+        argument a tool does not list is refused.
 
         Workflow: reminders_search first, then use the id it returns. Reminder identifiers \
         are not sync-proof — resynchronising an account regenerates them — so do not reuse \
@@ -18,7 +27,8 @@ public enum RemindersMCPServer {
         Search looks at OPEN reminders unless told otherwise. Pass status="completed" or \
         status="any" when the question is about what has already been done.
 
-        Dates accept three forms: 2026-08-12 (that day, no particular time), \
+        Dates accept three forms (from_date and to_date, both inclusive at the precision \
+        written, bound the due date in a search): 2026-08-12 (that day, no particular time), \
         2026-08-12T09:00 (local time), or 2026-08-12T09:00:00+02:00 (explicit offset). A \
         reminder with no due date at all is perfectly normal.
 

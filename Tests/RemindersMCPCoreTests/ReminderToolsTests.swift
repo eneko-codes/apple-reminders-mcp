@@ -233,7 +233,7 @@ struct ReminderToolsTests {
     @Test("A plain day as due_to covers that whole day")
     func plainDayUpperBoundIncludesTheDay() async {
         let result = await call(
-            "reminders_search", ["due_to": .string("2026-08-12")])
+            "reminders_search", ["to_date": .string("2026-08-12")])
         #expect(result.text.contains("Buy olive oil"), "due 12 Aug at 18:00, not midnight")
         #expect(!result.text.contains("Water the plants"), "due 14 Aug, outside the bound")
     }
@@ -244,12 +244,12 @@ struct ReminderToolsTests {
     func dueWindowIsEchoedAsWritten() async {
         let result = await call(
             "reminders_search",
-            ["due_from": .string("2026-08-01"), "due_to": .string("2026-08-12")])
+            ["from_date": .string("2026-08-01"), "to_date": .string("2026-08-12")])
         #expect(result.text.contains("due 2026-08-01 → 2026-08-12"))
         #expect(!result.text.contains("2026-08-13"))
 
         let timed = await call(
-            "reminders_search", ["due_to": .string("2026-08-12T18:30")])
+            "reminders_search", ["to_date": .string("2026-08-12T18:30")])
         #expect(timed.text.contains("due any → 2026-08-12T18:30"), "a timed bound keeps its time")
     }
 
@@ -257,7 +257,7 @@ struct ReminderToolsTests {
     func dueWindowExcludesUndated() async {
         let result = await call(
             "reminders_search",
-            ["due_from": .string("2026-08-01"), "due_to": .string("2026-08-31")])
+            ["from_date": .string("2026-08-01"), "to_date": .string("2026-08-31")])
         #expect(!result.text.contains("Read the migration guide"))
     }
 
@@ -265,7 +265,7 @@ struct ReminderToolsTests {
     func backwardsDueRangeIsRefused() async {
         let result = await call(
             "reminders_search",
-            ["due_from": .string("2026-08-31"), "due_to": .string("2026-08-01")])
+            ["from_date": .string("2026-08-31"), "to_date": .string("2026-08-01")])
         #expect(result.isError)
     }
 
@@ -290,7 +290,7 @@ struct ReminderToolsTests {
     @Test("A truncated page announces what it withheld")
     func truncationIsAnnounced() async {
         let result = await call("reminders_search", ["limit": .int(2)])
-        #expect(result.text.contains("more · call again with offset=2"))
+        #expect(result.text.contains("Pass offset=2 for the next page."))
     }
 
     @Test("An unrecognised status is refused rather than guessed")
@@ -387,10 +387,14 @@ struct ReminderToolsTests {
     @Test("A read-only list refuses every write, including completion")
     func readOnlyListRefusesWrites() async {
         let store = FakeReminderStore()
+        let extras: [String: [String: Value]] = [
+            "update_reminder": ["title": .string("Nope")],
+            "complete_reminder": [:],
+            "delete_reminder": ["confirm": .bool(true)],
+        ]
         for name in ["update_reminder", "complete_reminder", "delete_reminder"] {
             let result = await call(
-                name,
-                ["id": .string("rem-shared"), "title": .string("Nope"), "confirm": .bool(true)],
+                name, ["id": .string("rem-shared")].merging(extras[name] ?? [:]) { $1 },
                 store: store)
             #expect(result.isError, "\(name) must refuse a read-only list")
             #expect(result.text.contains("read-only"))
