@@ -136,12 +136,15 @@ than typing it, because `codesign` rejects a near-miss with `no identity found` 
 `pack.sh` then stops before writing a bundle:
 
 ```bash
-security find-identity -v -p codesigning
+security find-identity -v -p codesigning   # copy the 40-character hash of an Apple Development or Developer ID Application identity
 ```
 
 ```bash
-MCPB_SIGN_IDENTITY="Apple Development: …" ./scripts/pack.sh
+MCPB_SIGN_IDENTITY="<identity hash>" ./scripts/pack.sh
 ```
+
+Pass the hash, not the certificate's name: `pack.sh` prints the identity it signs with,
+and the name is yours.
 
 That produces `dist/apple-reminders-mcp.mcpb`. Without the identity it signs ad-hoc, which
 works but re-prompts for permission on every rebuild.
@@ -204,7 +207,7 @@ between ad-hoc, Apple Development and Developer ID each costs one fresh round of
 ### Preparing something to distribute
 
 ```bash
-MCPB_HARDENED=1 MCPB_SIGN_IDENTITY="Developer ID Application: …" ./scripts/pack.sh
+MCPB_HARDENED=1 MCPB_SIGN_IDENTITY="<Developer ID Application hash>" ./scripts/pack.sh
 ```
 
 That adds the hardened runtime and a secure timestamp, which notarisation requires.
